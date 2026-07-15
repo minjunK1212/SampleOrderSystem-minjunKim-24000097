@@ -17,6 +17,10 @@ def _format_order_id(n: int) -> str:
     return f"ORD-{n:04d}"
 
 
+class OrderSystemDataError(Exception):
+    """저장된 JSON 파일을 읽을 수 없을 때 발생한다(문법 오류 등)."""
+
+
 class OrderSystemRepository:
     """통합 JSON({"samples", "orders", "production_queue"})을 다루는 리포지토리."""
 
@@ -34,7 +38,11 @@ class OrderSystemRepository:
             self._production_queue = []
             return
 
-        raw = json.loads(self.data_path.read_text(encoding="utf-8"))
+        try:
+            raw = json.loads(self.data_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise OrderSystemDataError(f"JSON 문법이 잘못되었습니다: {self.data_path} (사유: {e})") from e
+
         samples_raw = raw.get("samples", [])
         self._samples = {item["sample_id"]: Sample.from_dict(item) for item in samples_raw}
         orders_raw = raw.get("orders", [])
