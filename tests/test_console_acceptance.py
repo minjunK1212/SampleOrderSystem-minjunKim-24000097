@@ -32,6 +32,10 @@ def test_full_console_acceptance_scenario(tmp_path):
     assert result.returncode == 0
     assert "Traceback" not in result.stderr
     assert "RELEASE" in result.stdout
+    assert "등록 시료" in result.stdout
+    assert "총 재고" in result.stdout
+    assert "전체 주문" in result.stdout
+    assert "생산라인" in result.stdout
 
     data_path = tmp_path / "data" / "sample_management.json"
     saved = json.loads(data_path.read_text(encoding="utf-8"))

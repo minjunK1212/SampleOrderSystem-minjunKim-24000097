@@ -1,4 +1,10 @@
 class MainMenuView:
+    def show_summary(self, summary):
+        print(
+            f"등록 시료 {summary.sample_count}종  총 재고 {summary.total_inventory}  "
+            f"전체 주문 {summary.order_count}건  생산라인 대기 {summary.production_queue_count}건"
+        )
+
     def show_menu(self):
         print("=" * 60)
         print("반도체 시료 생산주문관리 시스템")

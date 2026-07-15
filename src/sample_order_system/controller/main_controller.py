@@ -7,6 +7,7 @@ from sample_order_system.controller.production_controller import ProductionContr
 from sample_order_system.controller.sample_controller import SampleController
 from sample_order_system.controller.shipment_controller import ShipmentController
 from sample_order_system.repository.order_system_repository import OrderSystemRepository
+from sample_order_system.service import main_menu_summary_service
 from sample_order_system.view.main_menu_view import MainMenuView
 from sample_order_system.view.monitoring_view import MonitoringView
 from sample_order_system.view.order_approval_view import OrderApprovalView
@@ -31,6 +32,8 @@ class MainController:
 
     def run(self):
         while True:
+            summary = main_menu_summary_service.get_main_menu_summary(self.repository)
+            self.main_menu_view.show_summary(summary)
             self.main_menu_view.show_menu()
             choice = self.main_menu_view.read_choice()
             if choice == "1":
