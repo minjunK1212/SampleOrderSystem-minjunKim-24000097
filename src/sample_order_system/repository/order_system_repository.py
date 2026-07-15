@@ -169,3 +169,24 @@ class OrderSystemRepository:
 
     def list_production_queue(self):
         return list(self._production_queue)
+
+    def get_current_production_job(self):
+        return self._production_queue[0] if self._production_queue else None
+
+    def complete_current_production(self) -> Order:
+        if not self._production_queue:
+            raise ValueError("현재 진행 중인 생산 작업이 없습니다.")
+
+        current = self._production_queue[0]
+        sample = self._samples[current.sample_id]
+        order = self._orders[current.order_id]
+
+        updated_sample = dataclasses.replace(sample, inventory=sample.inventory + current.production_quantity)
+        self._samples[sample.sample_id] = updated_sample
+
+        confirmed_order = dataclasses.replace(order, status=OrderStatus.CONFIRMED)
+        self._orders[order.order_id] = confirmed_order
+
+        self._production_queue.pop(0)
+        self._save()
+        return confirmed_order
