@@ -7,6 +7,7 @@ class MainMenuView:
         print("[2] 시료 주문")
         print("[3] 주문 승인/거절")
         print("[4] 생산 라인")
+        print("[5] 출고 처리")
         print("[0] 종료")
 
     def read_choice(self):

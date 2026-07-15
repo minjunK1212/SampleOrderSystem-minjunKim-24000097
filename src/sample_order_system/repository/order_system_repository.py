@@ -170,6 +170,23 @@ class OrderSystemRepository:
     def list_production_queue(self):
         return list(self._production_queue)
 
+    def release_order(self, order_id) -> Order:
+        order = self._orders.get(order_id)
+        if order is None:
+            raise ValueError(f"존재하지 않는 주문입니다: {order_id}")
+        if order.status != OrderStatus.CONFIRMED:
+            raise ValueError(
+                f"CONFIRMED 상태의 주문만 출고할 수 있습니다: {order_id} (현재 상태: {order.status.value})"
+            )
+        sample = self._samples[order.sample_id]
+        updated_sample = dataclasses.replace(sample, inventory=sample.inventory - order.quantity)
+        self._samples[sample.sample_id] = updated_sample
+
+        released = dataclasses.replace(order, status=OrderStatus.RELEASE)
+        self._orders[order_id] = released
+        self._save()
+        return released
+
     def get_current_production_job(self):
         return self._production_queue[0] if self._production_queue else None
 
