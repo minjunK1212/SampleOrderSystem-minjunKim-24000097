@@ -1,11 +1,13 @@
 import dataclasses
 import json
+import math
 import os
 import re
 import tempfile
 from pathlib import Path
 
 from sample_order_system.model.order import Order, OrderStatus
+from sample_order_system.model.production_queue import ProductionQueueItem
 from sample_order_system.model.sample import Sample
 
 _ORDER_ID_PATTERN = re.compile(r"^ORD-(\d+)$")
@@ -16,24 +18,20 @@ def _format_order_id(n: int) -> str:
 
 
 class OrderSystemRepository:
-    """통합 JSON({"samples", "orders", "production_queue"})을 다루는 리포지토리.
-
-    Cycle 2까지는 samples/orders 관련 메서드만 구현한다. production_queue는
-    로드한 그대로(빈 리스트 포함) 보존만 하고 조작하지 않는다.
-    """
+    """통합 JSON({"samples", "orders", "production_queue"})을 다루는 리포지토리."""
 
     def __init__(self, data_path):
         self.data_path = Path(data_path)
         self._samples = {}
         self._orders = {}
-        self._production_queue_raw = []
+        self._production_queue = []
         self._load()
 
     def _load(self):
         if not self.data_path.exists() or self.data_path.stat().st_size == 0:
             self._samples = {}
             self._orders = {}
-            self._production_queue_raw = []
+            self._production_queue = []
             return
 
         raw = json.loads(self.data_path.read_text(encoding="utf-8"))
@@ -41,7 +39,10 @@ class OrderSystemRepository:
         self._samples = {item["sample_id"]: Sample.from_dict(item) for item in samples_raw}
         orders_raw = raw.get("orders", [])
         self._orders = {item["order_id"]: Order.from_dict(item) for item in orders_raw}
-        self._production_queue_raw = raw.get("production_queue", [])
+        queue_raw = raw.get("production_queue", [])
+        self._production_queue = sorted(
+            (ProductionQueueItem.from_dict(item) for item in queue_raw), key=lambda i: i.queue_position
+        )
 
     def _next_order_id(self):
         max_n = 0
@@ -51,12 +52,17 @@ class OrderSystemRepository:
                 max_n = max(max_n, int(match.group(1)))
         return _format_order_id(max_n + 1)
 
+    def _next_queue_position(self):
+        if not self._production_queue:
+            return 1
+        return max(item.queue_position for item in self._production_queue) + 1
+
     def _save(self):
         self.data_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "samples": [sample.to_dict() for sample in self._samples.values()],
             "orders": [order.to_dict() for order in self._orders.values()],
-            "production_queue": self._production_queue_raw,
+            "production_queue": [item.to_dict() for item in self._production_queue],
         }
         fd, tmp_name = tempfile.mkstemp(
             prefix=f".{self.data_path.name}.", suffix=".tmp", dir=str(self.data_path.parent)
@@ -141,10 +147,25 @@ class OrderSystemRepository:
         if sample is None:
             raise ValueError(f"주문이 참조하는 시료를 찾을 수 없습니다: {order.sample_id}")
         if sample.inventory < order.quantity:
-            raise NotImplementedError(
-                "재고가 부족한 주문 승인은 아직 지원하지 않습니다 (Cycle 5에서 생산 큐 등록으로 구현 예정)."
+            required_quantity = max(order.quantity - sample.inventory, 1)
+            production_quantity = math.ceil(required_quantity / sample.yield_rate)
+            queue_item = ProductionQueueItem(
+                order_id=order.order_id,
+                sample_id=order.sample_id,
+                required_quantity=required_quantity,
+                production_quantity=production_quantity,
+                queue_position=self._next_queue_position(),
             )
+            self._production_queue.append(queue_item)
+            producing = dataclasses.replace(order, status=OrderStatus.PRODUCING)
+            self._orders[order_id] = producing
+            self._save()
+            return producing
+
         confirmed = dataclasses.replace(order, status=OrderStatus.CONFIRMED)
         self._orders[order_id] = confirmed
         self._save()
         return confirmed
+
+    def list_production_queue(self):
+        return list(self._production_queue)
