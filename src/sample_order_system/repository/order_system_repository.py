@@ -1,10 +1,11 @@
+import dataclasses
 import json
 import os
 import re
 import tempfile
 from pathlib import Path
 
-from sample_order_system.model.order import Order
+from sample_order_system.model.order import Order, OrderStatus
 from sample_order_system.model.sample import Sample
 
 _ORDER_ID_PATTERN = re.compile(r"^ORD-(\d+)$")
@@ -111,3 +112,19 @@ class OrderSystemRepository:
 
     def list_orders(self):
         return list(self._orders.values())
+
+    def list_orders_by_status(self, status: OrderStatus):
+        return [order for order in self._orders.values() if order.status == status]
+
+    def reject_order(self, order_id) -> Order:
+        order = self._orders.get(order_id)
+        if order is None:
+            raise ValueError(f"존재하지 않는 주문입니다: {order_id}")
+        if order.status != OrderStatus.RESERVED:
+            raise ValueError(
+                f"RESERVED 상태의 주문만 거절할 수 있습니다: {order_id} (현재 상태: {order.status.value})"
+            )
+        rejected = dataclasses.replace(order, status=OrderStatus.REJECTED)
+        self._orders[order_id] = rejected
+        self._save()
+        return rejected
