@@ -11,3 +11,7 @@ def list_reserved_orders(repository):
 
 def reject_order(repository, order_id):
     return repository.reject_order(order_id)
+
+
+def approve_order(repository, order_id):
+    return repository.approve_order(order_id)

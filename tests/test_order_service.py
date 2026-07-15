@@ -32,3 +32,13 @@ def test_reject_order_via_service(tmp_path):
     rejected = order_service.reject_order(repo, order.order_id)
 
     assert rejected.status == OrderStatus.REJECTED
+
+
+def test_approve_order_via_service(tmp_path):
+    repo = OrderSystemRepository(tmp_path / "sample_management.json")
+    repo.register_sample(Sample("S-001", "Silicon Wafer 8-inch", 0.5, 0.9, inventory=100))
+    order = order_service.reserve_order(repo, sample_id="S-001", customer_name="A", quantity=5)
+
+    approved = order_service.approve_order(repo, order.order_id)
+
+    assert approved.status == OrderStatus.CONFIRMED

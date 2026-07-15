@@ -129,3 +129,56 @@ def test_reject_order_does_not_change_sample_inventory(tmp_path):
     repo.reject_order(order.order_id)
 
     assert repo.get_sample("S-001").inventory == 100
+
+
+def test_approve_order_transitions_to_confirmed_when_inventory_sufficient(tmp_path):
+    data_path = tmp_path / "sample_management.json"
+    repo = OrderSystemRepository(data_path)
+    repo.register_sample(make_sample(inventory=100))
+    order = repo.reserve_order(sample_id="S-001", customer_name="A", quantity=50)
+
+    approved = repo.approve_order(order.order_id)
+
+    assert approved.status == OrderStatus.CONFIRMED
+    saved = json.loads(data_path.read_text(encoding="utf-8"))
+    assert saved["orders"][0]["status"] == "CONFIRMED"
+
+
+def test_approve_order_does_not_change_sample_inventory(tmp_path):
+    data_path = tmp_path / "sample_management.json"
+    repo = OrderSystemRepository(data_path)
+    repo.register_sample(make_sample(inventory=100))
+    order = repo.reserve_order(sample_id="S-001", customer_name="A", quantity=50)
+
+    repo.approve_order(order.order_id)
+
+    assert repo.get_sample("S-001").inventory == 100
+
+
+def test_approve_order_rejects_non_reserved_order(tmp_path):
+    data_path = tmp_path / "sample_management.json"
+    repo = OrderSystemRepository(data_path)
+    repo.register_sample(make_sample(inventory=100))
+    order = repo.reserve_order(sample_id="S-001", customer_name="A", quantity=50)
+    repo.approve_order(order.order_id)
+
+    with pytest.raises(ValueError):
+        repo.approve_order(order.order_id)
+
+
+def test_approve_order_rejects_unknown_order_id(tmp_path):
+    data_path = tmp_path / "sample_management.json"
+    repo = OrderSystemRepository(data_path)
+
+    with pytest.raises(ValueError):
+        repo.approve_order("ORD-9999")
+
+
+def test_approve_order_raises_not_implemented_when_inventory_insufficient(tmp_path):
+    data_path = tmp_path / "sample_management.json"
+    repo = OrderSystemRepository(data_path)
+    repo.register_sample(make_sample(inventory=10))
+    order = repo.reserve_order(sample_id="S-001", customer_name="A", quantity=50)
+
+    with pytest.raises(NotImplementedError):
+        repo.approve_order(order.order_id)

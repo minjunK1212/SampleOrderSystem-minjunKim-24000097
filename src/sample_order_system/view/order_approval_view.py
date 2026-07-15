@@ -10,7 +10,10 @@ class OrderApprovalView:
             print(f"{o.order_id:<12}{o.customer_name:<16}{o.sample_id:<10}{o.quantity:<8}")
 
     def read_order_id(self):
-        return input("거절할 주문번호 (0=뒤로) > ").strip()
+        return input("처리할 주문번호 (0=뒤로) > ").strip()
+
+    def read_decision(self):
+        return input("[Y] 승인  [N] 거절 > ").strip().upper()
 
     def show_order(self, order):
         print(order)

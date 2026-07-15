@@ -128,3 +128,23 @@ class OrderSystemRepository:
         self._orders[order_id] = rejected
         self._save()
         return rejected
+
+    def approve_order(self, order_id) -> Order:
+        order = self._orders.get(order_id)
+        if order is None:
+            raise ValueError(f"존재하지 않는 주문입니다: {order_id}")
+        if order.status != OrderStatus.RESERVED:
+            raise ValueError(
+                f"RESERVED 상태의 주문만 승인할 수 있습니다: {order_id} (현재 상태: {order.status.value})"
+            )
+        sample = self._samples.get(order.sample_id)
+        if sample is None:
+            raise ValueError(f"주문이 참조하는 시료를 찾을 수 없습니다: {order.sample_id}")
+        if sample.inventory < order.quantity:
+            raise NotImplementedError(
+                "재고가 부족한 주문 승인은 아직 지원하지 않습니다 (Cycle 5에서 생산 큐 등록으로 구현 예정)."
+            )
+        confirmed = dataclasses.replace(order, status=OrderStatus.CONFIRMED)
+        self._orders[order_id] = confirmed
+        self._save()
+        return confirmed
