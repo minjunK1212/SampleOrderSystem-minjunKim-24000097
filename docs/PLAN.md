@@ -1,0 +1,182 @@
+# SampleOrderSystem 구현 계획 — PoC 자산 분석
+
+이 문서는 코드를 옮기기 전에, 앞서 완성한 4개 PoC(ConsoleMVC, DataPersistence, DataMonitor,
+DummyDataGenerator)에서 무엇을 재사용/재작성/폐기할지, 그리고 최종 구현 순서를 정리한다.
+**PoC 리포지토리를 그대로 import하거나 상대경로로 의존하지 않는다.** 이 문서에서 "재사용"은
+검증된 로직·규칙·인터페이스 설계를 참고해 SampleOrderSystem 안에 새로 작성한다는 뜻이며,
+파일을 복사해 오는 것을 의미하지 않는다.
+
+## 0. 가장 먼저 해결해야 할 불일치: 도메인 모델 통일
+
+4개 PoC를 독립적으로 만들다 보니 같은 개념에 대해 서로 다른 필드명을 썼다. SampleOrderSystem은
+**하나의 Domain Model, 하나의 통합 JSON 스키마**만 가지므로 아래 불일치를 먼저 확정해야 한다.
+
+| 개념 | ConsoleMVC | DataPersistence | DataMonitor / DummyDataGenerator | 최종 채택 |
+|---|---|---|---|---|
+| 시료 필드 | `Sample(sample_id, name, average_production_time, yield_rate, inventory)` | 동일 | 동일 | **변경 없음** — 3개 PoC가 이미 일치 |
+| 주문 완료 상태명 | `RELEASED` (OrderStatus Enum) | (해당 없음) | `RELEASE` (문자열) | **`RELEASE`** — PDF 8p 표와 DataMonitor/DummyDataGenerator 표기를 따름 |
+| 주문 상태 표현 | `Enum` (OrderStatus) | (해당 없음) | 허용값 목록을 가진 `str` | **`Enum`으로 재도입하되 값은 문자열과 동일하게 유지**(`Enum(str)` 형태) — 타입 안정성 + JSON 직렬화 호환 둘 다 확보 |
+| 생산 큐 항목 필드 | `ProductionJob(order_id, sample_id, shortage_quantity, actual_quantity, total_process_time)` — 값 계산은 전부 TODO | (해당 없음) | `ProductionQueueItem(order_id, sample_id, required_quantity, production_quantity, queue_position)` — 계산식 확정, 실제 사용 중 | **DataMonitor/DummyDataGenerator 필드명 채택**, ConsoleMVC 필드명은 폐기 |
+| 생산 큐 자료구조 | `deque` + `current_job`(진행 중 1건) | (해당 없음) | 단순 리스트(대기열 전체를 한 번에 나열, "진행 중" 개념 없음) | **`deque` 기반 유지** — PDF의 "현재 처리 중 1건 + 대기 목록" UI(21p 예시)를 충족하려면 진행 중 개념이 필요 |
+
+## 1. PoC별 재사용 / 재작성 / 폐기
+
+### ConsoleMVC (`model/`, `view/`, `controller/`)
+
+- **재사용(설계 그대로 따름)**
+  - Model / View / Controller 3계층 분리 구조 자체. PDF 미션1이 요구한 구조이자, SampleOrderSystem도
+    콘솔 기반 대화형 시스템이므로 그대로 이어간다.
+  - `MainController`가 메뉴별 서브컨트롤러+뷰를 조립하고 라우팅하는 패턴(`controller/main_controller.py`).
+  - 각 `*_view.py`의 메뉴 문구·입력 프롬프트 구조(예: `[1] 시료 등록  [2] 시료 목록 ...`) — PDF의
+    예시 UI 화면과 맞닿아 있어 그대로 이어받는다.
+- **재작성(뼈대만 있고 실제 로직이 없어 새로 채워야 함)**
+  - `OrderController.approve_order`: 현재 `shortage_quantity=0`, `actual_quantity=0`,
+    `total_process_time=0`으로 TODO 처리되어 있음 → `required_quantity = max(quantity - inventory, 1)`,
+    `production_quantity = ceil(required_quantity / yield_rate)`, `total_process_time =
+    average_production_time * production_quantity` 실제 계산으로 교체.
+  - `ProductionController.complete_current_job`: 현재 큐를 그냥 다음 항목으로 넘기기만 하고 재고
+    반영·주문 상태 전환이 없음 → 생산 완료 시 `sample.inventory`에 `production_quantity`를 더하고
+    해당 주문을 `PRODUCING → CONFIRMED`로 전환하는 로직 추가.
+  - `OrderStatus`: `RELEASED` → `RELEASE`로 값 변경.
+  - `ProductionJob` → `ProductionQueueItem`으로 필드명 교체(위 표 참고).
+- **폐기**
+  - 없음 — 구조 자체는 전부 유효하고, 값 계산 로직만 채우면 되는 수준.
+
+### DataPersistence (`model/sample.py`, `repository/sample_repository.py`)
+
+- **재사용**
+  - `Sample` dataclass 필드 정의(변경 없이 그대로).
+  - `validate_sample_fields` 검증 규칙(빈 문자열 금지, `average_production_time > 0`,
+    `0 < yield_rate <= 1`, `inventory >= 0`).
+  - `SampleRepository`의 원자적 저장 방식(임시 파일 → `os.replace`)과 sample_id/name 중복 검증 로직 —
+    다만 대상 범위를 Sample 전용에서 Sample+Order+ProductionQueue 통합 리포지토리로 확장 재작성.
+- **재작성**
+  - 리포지토리 범위: `SampleRepository` 하나만 있던 것을, `samples`/`orders`/`production_queue`를
+    함께 다루는 단일 `OrderSystemRepository`(가칭)로 확장.
+- **폐기**
+  - 없음 — `samples`만 다루던 스코프가 좁을 뿐, 로직 자체는 전부 재사용 가치가 있음.
+
+### DataMonitor (`src/data_monitor/*.py`)
+
+- **재사용**
+  - `monitor_service.py`의 집계 함수들(`count_orders_by_status`, `valid_order_quantity_by_sample`,
+    `inventory_status`의 여유/부족/고갈 기준, `sorted_production_queue`) — PDF의 "모니터링" 메뉴
+    요구사항(18~19p)과 정확히 일치. 필드명만 통일된 도메인 모델에 맞게 조정해 그대로 가져온다.
+  - `json_loader.py`의 구조적 오류 처리 방식(파일 없음/빈 파일/JSON 문법 오류/최상위 타입 오류를
+    구분해 명확한 한국어 메시지로 예외 발생) — 통합 리포지토리의 로딩 계층에 반영.
+- **재작성**
+  - 이 PoC는 "읽기 전용"이 전제였으므로, 최종 시스템에서는 동일한 집계 로직을 CRUD 가능한
+    리포지토리 위에서 다시 호출하도록 감싸야 한다(집계 함수 자체는 순수 함수라 그대로 재사용 가능,
+    감싸는 방식만 재작성).
+- **폐기**
+  - `--watch` 반복 조회, OS 비종속 화면 갱신 등 "모니터링 전용 콘솔 앱"으로서의 실행 진입점
+    설계는 폐기 — 최종 시스템은 메인 메뉴의 `[4] 모니터링` 안에서 1회성으로 같은 정보를 보여주면
+    충분하다(PDF 예시 UI 기준).
+
+### DummyDataGenerator (`src/dummy_data_generator/*.py`)
+
+- **재사용**
+  - `validator.py`의 참조 무결성 검증 로직(Sample/Order 중복 검사, Order의 sample_id 참조 검사,
+    ProductionQueue의 `required_quantity`/`production_quantity` 계산식 일치 검사, PRODUCING 주문과
+    큐 항목의 1:1 매칭 검사) — 통합 리포지토리가 저장 전에 수행할 검증 로직의 기반으로 그대로 채택.
+  - `json_storage.py`의 `tempfile.mkstemp` 기반 원자적 저장 + 로딩 시 항목 단위 타입 검증 패턴 —
+    통합 리포지토리의 저장/로딩 계층 설계 기준으로 채택.
+  - 생성 규칙(시료 재고 4구간 분포, 주문 5개 상태 커버리지, PRODUCING 주문만 큐에 매핑) — 이번
+    프로젝트에서도 "Dummy 데이터 시딩" 스크립트로 그대로 필요하다.
+- **재작성**
+  - CLI(`cli.py`)는 SampleOrderSystem의 대화형 메인 메뉴와는 별개로, "초기 데이터 시딩용
+    독립 스크립트"로 유지하되 통합 리포지토리의 스키마/검증 함수를 그대로 호출하도록 재작성
+    (로직 중복 제거).
+- **폐기**
+  - `--mode append`처럼 생성 도구 자체의 CLI 옵션 체계는 시딩 스크립트에만 남기고, 대화형
+    메인 메뉴에는 노출하지 않는다(PDF 기능 명세에 없는 메뉴이므로).
+
+## 2. 최종 아키텍처 (재사용 요소를 반영한 결론)
+
+```
+SampleOrderSystem/
+├── CLAUDE.md
+├── PRD.md
+├── docs/
+│   └── PLAN.md              (이 문서)
+├── main.py                   # 대화형 콘솔 진입점 (ConsoleMVC 패턴 계승)
+├── scripts/
+│   └── seed_dummy_data.py    # DummyDataGenerator 로직을 재작성한 시딩 스크립트
+├── src/sample_order_system/
+│   ├── model/                 # 통일된 Sample/Order/ProductionQueueItem/OrderStatus
+│   ├── repository/            # DataPersistence+DummyDataGenerator 저장 로직을 확장 재작성
+│   ├── service/               # 주문 승인/생산 완료/출고 등 실제 비즈니스 규칙 (ConsoleMVC의 TODO를 채움)
+│   ├── monitor/                # DataMonitor 집계 로직 재사용
+│   ├── controller/             # ConsoleMVC 패턴 계승, service/repository 호출
+│   └── view/                   # ConsoleMVC 패턴 계승
+└── tests/
+```
+
+## 3. 구현 순서 — Vertical Slice Cycle (Living Plan)
+
+이 프로젝트는 계층 전체(Model 전체 → Repository 전체 → Service 전체 → ...)를 한 번에 구현하지
+않는다. 대신 **하나의 기능을 처음부터 끝까지(Model~View, 필요한 만큼) 관통하는 얇은 조각(Vertical
+Slice) 단위**로 나눠, `SKILL.md`(agentic-tdd)의 RED(Plan 승인 → Test 승인) → GREEN → REVIEW
+사이클을 각 Cycle마다 반복한다.
+
+이 섹션은 **최초에 한 번 쓰고 끝나는 문서가 아니라, 프로젝트 전체 기간 동안 계속 갱신되는 Living
+Plan**이다. 각 Cycle을 시작하기 전 "Plan" 항목을 채워 RED Commit을 만들고, 완료 후 "Result"
+항목을 채워 GREEN Commit에 포함시킨다. 규칙과 문서 형식은 `CLAUDE.md`를 따른다.
+
+### 예상 Cycle 목록
+
+| Cycle | 기능 | 상태 |
+|---|---|---|
+| 0 | 프로젝트 구조와 Harness | 대기 |
+| 1 | 시료 등록, 조회, 검색 | 대기 |
+| 2 | 주문 접수와 RESERVED 상태 생성 | 대기 |
+| 3 | RESERVED 주문 거절 | 대기 |
+| 4 | 재고가 충분한 주문 승인 | 대기 |
+| 5 | 재고가 부족한 주문 승인과 생산 큐 등록 | 대기 |
+| 6 | FIFO 생산라인 조회와 생산 완료 | 대기 |
+| 7 | CONFIRMED 주문 출고 | 대기 |
+| 8 | 주문 및 재고 모니터링 | 대기 |
+| 9 | JSON 영속성과 재실행 복구 | 대기 |
+| 10 | 전체 Acceptance Scenario | 대기 |
+
+이 순서는 확정이 아니라 초안이다. Cycle을 진행하다 필요성이 확인되면 이 표와 아래 Cycle
+Log를 갱신하고 재승인을 받는다(예: Cycle 분할/병합, 순서 변경).
+
+각 Cycle에서 필요한 만큼의 Model, Repository, Service, Controller, View, Test를 함께
+조금씩 구현한다(계층 전체를 미리 만들어두지 않는다). PoC 재사용/재작성/폐기 방침(1장)은 각
+Cycle에서 해당 계층을 처음 건드릴 때 적용한다 — 예: Cycle 1에서 Model의 Sample과 Repository의
+저장 로직 일부, Cycle 4~5에서 Service의 승인 로직과 그때 필요한 Repository 확장이 이뤄진다.
+
+### Cycle Log
+
+각 Cycle의 상세 Plan과 실제 구현 결과는 아래에 Cycle별로 추가한다. Plan 승인 시 RED Commit,
+구현 완료 승인 시 GREEN Commit에 포함된다(형식은 `CLAUDE.md`의 "Agentic TDD Cycle" 절 참고).
+
+<!--
+Cycle N: <기능명> 를 시작할 때 아래 형식으로 이 아래에 추가한다.
+
+#### Cycle N: <기능명> — Plan (RED)
+
+- 현재 상태 / 목표 / 관련 요구사항(PRD.md 절 번호) / 포함 범위 / 제외 범위
+- Acceptance Criteria
+- 예정 테스트 목록
+- 구현 접근 방식
+- 변경 예정 파일
+- Harness 명령
+- RED/GREEN Commit 계획
+- 완료 조건
+
+#### Cycle N: <기능명> — Result (GREEN)
+
+- 상태: Completed
+- 실제 변경 파일
+- 실제 테스트 수와 결과
+- Harness 결과
+- 계획 대비 변경 사항
+- 범위 이탈 여부
+- 남은 위험 또는 후속 작업
+-->
+
+(아직 시작된 Cycle 없음 — Cycle 0 Plan부터 순서대로 이 아래에 추가된다.)
+
+각 Cycle의 RED/GREEN 커밋은 별도로 남기고, 원격 저장소에 즉시 push한다(`CLAUDE.md` 참고).
